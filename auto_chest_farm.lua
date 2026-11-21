@@ -70,6 +70,9 @@ local escaped        = false
 
 local lastSafePos    = nil   -- last grounded position (anti-drown)
 local statusLabel    = nil   -- GUI status label reference
+local stuckPosKey    = nil   -- position key we're stuck on
+local stuckSince     = nil   -- when we started waiting there
+local STUCK_TIMEOUT  = 90    -- seconds before server hop when stuck
 
 --==================== HELPERS ====================--
 local function getChar()
@@ -495,6 +498,7 @@ local function buildMenu()
 
     -- drag: attach to frame + title + every button (so dragging works everywhere)
     local dragging, dragStart, startPos = false, nil, nil
+    local suppressClick = false
     local function startDrag(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
            or input.UserInputType == Enum.UserInputType.Touch then
@@ -515,6 +519,11 @@ local function buildMenu()
         if input.UserInputType == Enum.UserInputType.MouseButton1
            or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
+            -- moved more than ~8px => it was a drag, suppress the click
+            if dragStart then
+                suppressClick = (input.Position - dragStart).Magnitude > 8
+            end
+            dragStart = nil
         end
     end
 
@@ -536,7 +545,10 @@ local function buildMenu()
         b.Parent = frame
         Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
         b.InputBegan:Connect(startDrag)   -- allow drag from buttons too
-        b.MouseButton1Click:Connect(callback)
+        b.MouseButton1Click:Connect(function()
+            if suppressClick then suppressClick = false return end
+            callback()
+        end)
         return b
     end
 
@@ -604,6 +616,7 @@ while farmRunning do
         if h and target then
             idleCount = 0
             if target.kind == "model" then
+                stuckPosKey, stuckSince = nil, nil
                 local chest = target.data
                 local dist = (chest.part.Position - h.Position).Magnitude
                 if dist <= OPEN_RANGE then
@@ -624,6 +637,16 @@ while farmRunning do
                 -- known position, chest may not be streamed yet
                 local pos = target.data
                 local dist = (pos - h.Position).Magnitude
+                local k = posKey(pos)
+                if k ~= stuckPosKey then
+                    stuckPosKey = k
+                    stuckSince = os.clock()
+                elseif os.clock() - stuckSince > STUCK_TIMEOUT then
+                    -- stuck on a dead/unrespawned chest too long -> server hop
+                    stuckPosKey, stuckSince = nil, nil
+                    idleCount = 0
+                    serverHop()
+                end
                 if dist <= OPEN_RANGE + 10 then
                     task.wait(STREAM_WAIT)
                 else
